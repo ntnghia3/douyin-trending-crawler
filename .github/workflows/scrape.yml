@@ -35,13 +35,14 @@ jobs:
           echo "\n\n== CURL BODY (first 100KB) ==" >> debug/curl.txt || true
           curl --max-time 30 -L --silent https://www.douyin.com/hot | head -c 102400 >> debug/curl.txt || true
 
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
       - name: Diagnostic - Playwright screenshot
         run: |
           mkdir -p debug
           node -e "(async ()=>{const {chromium}=require('playwright');const browser=await chromium.launch({args:['--no-sandbox']});const page=await browser.newPage();try{await page.goto('https://www.douyin.com/hot',{timeout:90000,waitUntil:'networkidle'});await page.screenshot({path:'debug/playwright-screenshot.png',fullPage:true});console.log('screenshot saved');}catch(e){console.error('playwright error',e.message);await page.screenshot({path:'debug/playwright-error.png',fullPage:true});}finally{await browser.close();process.exit(0);}})()"
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps
 
       - name: Run scraper
         env:
