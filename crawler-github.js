@@ -41,8 +41,13 @@ async function scrapeDouyin(limit = 20) {
   for (const url of urlCandidates) {
     try {
       console.log(`--> goto ${url}`);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(2500); // let client JS run
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForTimeout(2500);
+      for (let i = 0; i < 6; i++) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 0.8));
+        await page.waitForTimeout(800);
+      }
+
       const html = await page.content();
       lastHtml = html;
       console.log('--> page.content length:', html.length);
