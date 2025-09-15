@@ -41,7 +41,7 @@ async function scrapeDouyin(limit = 20) {
   for (const url of urlCandidates) {
     try {
       console.log(`--> goto ${url}`);
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForTimeout(2500); // let client JS run
       const html = await page.content();
       lastHtml = html;
