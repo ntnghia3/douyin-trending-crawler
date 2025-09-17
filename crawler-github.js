@@ -21,6 +21,31 @@ function mkDebugDir() {
   return dir;
 }
 
+async function fetchDouyinStats(douyin_id) {
+  const url = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${douyin_id}`;
+  try {
+    const res = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://www.douyin.com/',
+      },
+      timeout: 20000
+    });
+    const detail = res.data.aweme_detail;
+    if (!detail || !detail.statistics) return null;
+    return {
+      play_count: detail.statistics.play_count,
+      digg_count: detail.statistics.digg_count,
+      comment_count: detail.statistics.comment_count,
+      share_count: detail.statistics.share_count,
+      create_time: detail.create_time
+    };
+  } catch (e) {
+    console.warn('Fetch stats error for', douyin_id, e.message);
+    return null;
+  }
+}
+
 async function scrapeDouyin(limit = 20) {
   console.log('=> Launching browser');
   const browser = await chromium.launch({
@@ -223,6 +248,45 @@ async function upsertToSupabase(videos) {
     console.log('=== Douyin scraper started ===');
     const videos = await scrapeDouyin(LIMIT);
     console.log('Scraped videos count:', videos.length);
+    // Tối ưu: lấy stats cho tất cả video trending song song
+    if (videos && videos.length) {
+      console.log('Fetching stats for videos...');
+      const statsArr = await Promise.all(videos.map(v => fetchDouyinStats(v.douyin_id)));
+      videos.forEach((v, i) => v.stats = statsArr[i]);
+
+      // Tính trung bình các chỉ số
+      const validStats = videos.map(v => v.stats).filter(s => s && s.play_count && s.digg_count && s.comment_count && s.share_count);
+      const avg = {
+        play_count: validStats.reduce((a, s) => a + s.play_count, 0) / validStats.length || 1,
+        digg_count: validStats.reduce((a, s) => a + s.digg_count, 0) / validStats.length || 1,
+        comment_count: validStats.reduce((a, s) => a + s.comment_count, 0) / validStats.length || 1,
+        share_count: validStats.reduce((a, s) => a + s.share_count, 0) / validStats.length || 1,
+      };
+
+      // Hàm tính điểm viral cho từng video
+      function calcViralScore(stats, created_at) {
+        if (!stats) return 0;
+        // Số ngày tồn tại
+        const now = Date.now() / 1000;
+        const days = Math.max(1, (now - (stats.create_time || (created_at ? Date.parse(created_at)/1000 : now))) / 86400);
+        // Tốc độ tăng trưởng
+        const growthViews = stats.play_count / days;
+        const growthLikes = stats.digg_count / days;
+        const growthComments = stats.comment_count / days;
+        const growthShares = stats.share_count / days;
+        // So sánh với trung bình
+        const score =
+          (growthViews / avg.play_count) +
+          (growthLikes / avg.digg_count) +
+          (growthComments / avg.comment_count) +
+          (growthShares / avg.share_count);
+        return Math.round(score * 100) / 100; // làm tròn 2 số
+      }
+
+      videos.forEach(v => {
+        v.viral_score = calcViralScore(v.stats, v.created_at);
+      });
+    }
     if (DEBUG) {
       const dir = mkDebugDir();
       const fname = path.join(dir, `scraped-${Date.now()}.json`);
