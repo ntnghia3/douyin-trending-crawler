@@ -9,6 +9,27 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DEBUG = (process.env.DEBUG || 'true').toLowerCase() === 'true';
 const LIMIT = parseInt(process.env.LIMIT || '20', 10);
+// Optional topic (tag or search query). Priority:
+// 1) config/topic.txt (or topic.txt at repo root)
+// 2) env TOPIC
+// 3) first CLI arg
+function readTopicFromFile() {
+  const candidates = [
+    path.join(process.cwd(), 'config', 'topic.txt'),
+    path.join(process.cwd(), 'topic.txt')
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const s = fs.readFileSync(p, 'utf8').trim();
+        if (s) return s.split('\n')[0].trim();
+      }
+    } catch (e) {}
+  }
+  return '';
+}
+
+const TOPIC = (readTopicFromFile() || process.env.TOPIC || process.argv[2] || '').trim();
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in env');
@@ -57,9 +78,74 @@ async function scrapeDouyin(limit = 20) {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
   });
 
-  console.log('=> Navigating to Douyin hot page...');
-  // use /hot or /discover - both tried
-  const urlCandidates = ['https://www.douyin.com/hot', 'https://www.douyin.com/discover'];
+  // Track direct video URLs from network responses
+  const directVideoUrls = new Map(); // douyin_id -> { url, meta }
+  
+  page.on('response', async (response) => {
+    try {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
+      
+      // Capture direct video URLs
+      if (contentType.startsWith('video/') || url.includes('/play/') || url.includes('.mp4')) {
+        console.log(`🎥 Found video response: ${url.substring(0, 80)}...`);
+        
+        // Try to extract douyin_id from URL or referer
+        const douyinId = extractDouyinIdFromUrl(url) || extractDouyinIdFromUrl(response.request().url());
+        if (douyinId) {
+          directVideoUrls.set(douyinId, {
+            url: url,
+            meta: {
+              content_type: contentType,
+              content_length: response.headers()['content-length'],
+              captured_at: new Date().toISOString(),
+              source: 'network_response'
+            }
+          });
+        }
+      }
+
+      // Capture video URLs from JSON responses
+      if (contentType.includes('application/json') && (url.includes('/aweme/') || url.includes('/play/'))) {
+        try {
+          const json = await response.json();
+          const extractedUrls = extractVideoUrlsFromJson(json);
+          for (const { douyinId, videoUrl } of extractedUrls) {
+            if (douyinId && videoUrl) {
+              directVideoUrls.set(douyinId, {
+                url: videoUrl,
+                meta: {
+                  source: 'json_response',
+                  original_endpoint: url,
+                  captured_at: new Date().toISOString()
+                }
+              });
+            }
+          }
+        } catch (e) {
+          // JSON parse failed, ignore
+        }
+      }
+    } catch (e) {
+      // Response processing failed, ignore
+    }
+  });
+
+  if (TOPIC) console.log('=> Navigating to Douyin topic/search page for:', TOPIC);
+  else console.log('=> Navigating to Douyin hot page...');
+
+  // Build candidate URLs. If TOPIC provided, try topic/tag and search pages first, then fall back.
+  const urlCandidates = TOPIC
+    ? [
+        // tag page (if topic is a tag slug)
+        `https://www.douyin.com/tag/${encodeURIComponent(TOPIC)}`,
+        // search page (works for free-text queries)
+        `https://www.douyin.com/search/${encodeURIComponent(TOPIC)}`,
+        // discover fallback
+        'https://www.douyin.com/discover',
+        'https://www.douyin.com/hot'
+      ]
+    : ['https://www.douyin.com/hot', 'https://www.douyin.com/discover'];
   let lastHtml = '';
   let items = [];
 
@@ -101,6 +187,16 @@ async function scrapeDouyin(limit = 20) {
 
       console.log('--> anchors found:', items.length);
       if (items.length >= 1) {
+        // Add direct video URLs if captured
+        items.forEach(item => {
+          const directData = directVideoUrls.get(item.douyin_id);
+          if (directData) {
+            item.video_url_direct = directData.url;
+            item.video_url_meta = directData.meta;
+            console.log(`🎯 Mapped direct URL for ${item.douyin_id}`);
+          }
+        });
+        
         // trim to limit and return
         items = items.slice(0, limit);
         await browser.close();
@@ -129,12 +225,24 @@ async function scrapeDouyin(limit = 20) {
       }
       console.log('--> ids found in scripts:', ids.size);
       if (ids.size > 0) {
-        items = Array.from(ids).slice(0, limit).map(id => ({
-          douyin_id: id,
-          title: `Douyin ${id}`,
-          video_url: `https://www.douyin.com/video/${id}`,
-          thumbnail_url: null
-        }));
+        items = Array.from(ids).slice(0, limit).map(id => {
+          const item = {
+            douyin_id: id,
+            title: `Douyin ${id}`,
+            video_url: `https://www.douyin.com/video/${id}`,
+            thumbnail_url: null
+          };
+          
+          // Add direct video URL if captured
+          const directData = directVideoUrls.get(id);
+          if (directData) {
+            item.video_url_direct = directData.url;
+            item.video_url_meta = directData.meta;
+            console.log(`🎯 Mapped direct URL for ${id}`);
+          }
+          
+          return item;
+        });
         await browser.close();
         return items;
       }
@@ -181,12 +289,24 @@ async function scrapeDouyin(limit = 20) {
         let mm;
         while ((mm = jsonRe.exec(text)) !== null) ids2.add(mm[1]);
         if (ids2.size > 0) {
-          items = Array.from(ids2).slice(0, limit).map(id => ({
-            douyin_id: id,
-            title: `Douyin ${id}`,
-            video_url: `https://www.douyin.com/video/${id}`,
-            thumbnail_url: null
-          }));
+          items = Array.from(ids2).slice(0, limit).map(id => {
+            const item = {
+              douyin_id: id,
+              title: `Douyin ${id}`,
+              video_url: `https://www.douyin.com/video/${id}`,
+              thumbnail_url: null
+            };
+            
+            // Add direct video URL if captured
+            const directData = directVideoUrls.get(id);
+            if (directData) {
+              item.video_url_direct = directData.url;
+              item.video_url_meta = directData.meta;
+              console.log(`🎯 Mapped direct URL for ${id}`);
+            }
+            
+            return item;
+          });
           await browser.close();
           return items;
         }
@@ -201,6 +321,60 @@ async function scrapeDouyin(limit = 20) {
   await browser.close();
   // final fallback: return empty
   return [];
+}
+
+// Helper function to extract douyin_id from URL
+function extractDouyinIdFromUrl(url) {
+  if (!url) return null;
+  const match = url.match(/\/video\/([0-9A-Za-z_-]{6,})/);
+  return match ? match[1] : null;
+}
+
+// Helper function to extract video URLs from JSON
+function extractVideoUrlsFromJson(json) {
+  const results = [];
+  
+  const traverse = (obj, path = '') => {
+    if (!obj || typeof obj !== 'object') return;
+    
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === 'aweme_id' || key === 'video_id') {
+        // Found a video ID, look for associated video URL in the same object
+        const videoUrl = findVideoUrlInObject(obj);
+        if (videoUrl) {
+          results.push({ douyinId: value, videoUrl });
+        }
+      } else if (typeof value === 'object') {
+        traverse(value, `${path}.${key}`);
+      }
+    }
+  };
+  
+  const findVideoUrlInObject = (obj) => {
+    // Common paths where video URLs are found
+    const paths = [
+      'video.play_addr.url_list.0',
+      'video.play_addr.url',
+      'play_addr.url_list.0', 
+      'play_url',
+      'video_url'
+    ];
+    
+    for (const path of paths) {
+      const url = getNestedValue(obj, path);
+      if (url && typeof url === 'string' && url.startsWith('http')) {
+        return url;
+      }
+    }
+    return null;
+  };
+  
+  const getNestedValue = (obj, path) => {
+    return path.split('.').reduce((curr, key) => curr && curr[key], obj);
+  };
+  
+  traverse(json);
+  return results;
 }
 
 async function upsertToSupabase(videos) {
@@ -227,19 +401,53 @@ async function upsertToSupabase(videos) {
     });
 
     console.log('Supabase response status:', res.status);
-    if (res.data) {
-      if (DEBUG) {
-        const dir = mkDebugDir();
-        const fname = path.join(dir, `upsert-response-${Date.now()}.json`);
-        fs.writeFileSync(fname, JSON.stringify(res.data, null, 2), 'utf8');
-        console.log('--> saved upsert response to', fname);
+    const upsertedVideos = res.data || [];
+    
+    // Update viral metrics for each video using the new function
+    if (upsertedVideos.length > 0) {
+      console.log('Updating viral metrics for', upsertedVideos.length, 'videos...');
+      
+      for (const video of upsertedVideos) {
+        if (video.id && video.viral_score !== null && video.viral_score !== undefined) {
+          try {
+            await updateViralMetrics(video.id, video.viral_score);
+          } catch (metricsError) {
+            console.warn('Failed to update viral metrics for video', video.id, ':', metricsError.message);
+          }
+        }
       }
-      return { inserted: Array.isArray(res.data) ? res.data.length : 0, data: res.data };
     }
-    return { inserted: 0 };
+
+    if (DEBUG) {
+      const dir = mkDebugDir();
+      const fname = path.join(dir, `upsert-response-${Date.now()}.json`);
+      fs.writeFileSync(fname, JSON.stringify(res.data, null, 2), 'utf8');
+      console.log('--> saved upsert response to', fname);
+    }
+    return { inserted: Array.isArray(res.data) ? res.data.length : 0, data: res.data };
   } catch (err) {
     console.error('Upsert error:', err.response ? err.response.data : err.message);
     throw err;
+  }
+}
+
+async function updateViralMetrics(videoId, newScore) {
+  const url = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/rpc/update_viral_metrics`;
+  try {
+    await axios.post(url, {
+      p_video_id: videoId,
+      p_new_score: newScore
+    }, {
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+  } catch (err) {
+    console.warn('Update viral metrics error:', err.response ? err.response.data : err.message);
+    // Don't throw - this is not critical to the main flow
   }
 }
 

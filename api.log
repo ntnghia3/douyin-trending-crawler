@@ -1,0 +1,6 @@
+nohup: ignoring input
+[dotenv@17.2.2] injecting env (2) from .env -- tip: 📡 auto-backup env with Radar: https://dotenvx.com/radar
+Download API server running on http://0.0.0.0:3001
+Health (inside container): http://localhost:3001/health
+If accessing from another machine use: http://<server-ip>:3001/
+Download endpoint: http://<server-ip>:3001/api/videos/:id/download

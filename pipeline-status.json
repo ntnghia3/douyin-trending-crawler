@@ -1,0 +1,50 @@
+{
+  "timestamp": "2025-09-25T16:55:52.497Z",
+  "config": {
+    "crawl": {
+      "limit": 200,
+      "pages": 8,
+      "topic": ""
+    },
+    "download": {
+      "count": 10,
+      "days": 3,
+      "minViralScore": 50
+    },
+    "args": {
+      "crawlOnly": false,
+      "downloadOnly": false,
+      "force": false,
+      "verbose": false,
+      "help": false,
+      "crawlLimit": 50,
+      "downloadCount": 10,
+      "topic": "",
+      "days": 3,
+      "minViral": 50
+    }
+  },
+  "status": {
+    "crawl": {
+      "started": true,
+      "completed": true,
+      "count": 0,
+      "error": null,
+      "startTime": 1758819096599,
+      "endTime": 1758819351670
+    },
+    "download": {
+      "started": true,
+      "completed": true,
+      "success": 0,
+      "failed": 0,
+      "error": null,
+      "startTime": 1758819351671,
+      "endTime": 1758819352497
+    }
+  },
+  "performance": {
+    "crawlTime": 255071,
+    "downloadTime": 826
+  }
+}
